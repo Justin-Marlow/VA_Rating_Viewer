@@ -82,7 +82,7 @@
     <ol class="note">
       <li>Log into <a href="https://www.va.gov" target="_blank" rel="noopener noreferrer">VA.gov</a>.</li>
       <li>Open <a href="https://api.va.gov/v0/rated_disabilities" target="_blank" rel="noopener noreferrer">this VA ratings API link</a>.</li>
-      <li>Copy the text shown.</li>
+      <li>Copy the JSON shown.</li>
       <li>Paste it below and click <b>Parse Pasted JSON</b>.</li>
     </ol>
     <div class="warning">No API loading is built into this page, so the file stays shareable and does not store personal ratings.</div>
@@ -95,8 +95,16 @@
       <button id="exportCsvBtn" class="secondary">Export CSV</button>
       <button id="exportSummaryBtn" class="secondary">Export Summary</button>
       <button id="printBtn" class="secondary">Print / Save PDF</button>
+      <button id="downloadBackupBtn" class="secondary">Download Backup</button>
+      <button id="importBackupBtn" class="secondary">Import Backup</button>
+      <input id="backupFileInput" type="file" accept="application/json" class="hidden">
       <input id="searchInput" type="text" placeholder="Search table...">
     </div>
+    <div class="filter-row" style="margin-top:12px;">
+      <label for="vetName" class="note">Veteran Name for Backup Filename:</label>
+      <input id="vetName" type="text" placeholder="Last, First">
+    </div>
+    <p class="note">Backup files contain sensitive VA rating data. Store and share them securely.</p>
     <p id="status" class="status">No data loaded.</p>
   </section>
 
@@ -211,6 +219,9 @@
     document.getElementById("exportCsvBtn").addEventListener("click", exportCsv);
     document.getElementById("exportSummaryBtn").addEventListener("click", exportSummary);
     document.getElementById("printBtn").addEventListener("click", function(){ window.print(); });
+    document.getElementById("downloadBackupBtn").addEventListener("click", downloadBackup);
+    document.getElementById("importBackupBtn").addEventListener("click", function(){ document.getElementById("backupFileInput").click(); });
+    document.getElementById("backupFileInput").addEventListener("change", importBackup);
     searchInput.addEventListener("input", renderTable);
     ["filterServiceConnected", "filterCompensable", "filterStatic", "filterBilateralLikely"].forEach(function(id){ document.getElementById(id).addEventListener("change", renderTable); });
 
@@ -391,9 +402,62 @@
     function labelForRegion(region) { return { head:"Head / Hearing", torso:"Torso", spine:"Spine / Back", right_upper:"Right Upper Extremity", left_upper:"Left Upper Extremity", right_lower:"Right Lower Extremity", left_lower:"Left Lower Extremity", right_foot:"Right Foot", left_foot:"Left Foot" }[region] || region; }
     function labelForLimb(limb) { const found = limbOptions.find(function(opt){ return opt[0] === limb; }); return found ? found[1] : "No bilateral limb factor"; }
 
+    function downloadBackup() {
+      const nameInput = document.getElementById("vetName").value.trim();
+      const safeName = nameInput ? nameInput.replace(/[^a-z0-9]/gi, "_").toLowerCase() : "va_session";
+      const date = new Date().toISOString().split("T")[0];
+      const filename = safeName + "_va_session_" + date + ".json";
+
+      const sessionData = {
+        app: "VA Disability Ratings Viewer and Calculator",
+        version: "1.0",
+        exported_at: new Date().toISOString(),
+        veteran_name: nameInput,
+        raw_json: jsonInput.value,
+        calculator: getCalculatorItems()
+      };
+
+      downloadText(filename, JSON.stringify(sessionData, null, 2), "application/json");
+      setStatus("Backup downloaded. Store it securely.");
+    }
+
+    function importBackup(event) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function(e) {
+        try {
+          const backup = JSON.parse(e.target.result);
+          const rawJson = backup.raw_json || backup.json || "";
+
+          document.getElementById("vetName").value = backup.veteran_name || "";
+          jsonInput.value = rawJson;
+
+          if (rawJson) {
+            processData(JSON.parse(rawJson));
+          }
+
+          clearCalculatorRows(false);
+          (backup.calculator || []).forEach(function(item){
+            addCalculatorRow(item.name, item.rating, item.limb);
+          });
+
+          calculateVaMath();
+          setStatus("Backup imported successfully.");
+        } catch (error) {
+          setStatus("Could not import backup. Make sure it is a valid backup JSON file.", true);
+        }
+
+        event.target.value = "";
+      };
+
+      reader.readAsText(file);
+    }
+
     function exportCsv() { const rows = getFilteredRows(); if (!rows.length) { setStatus("No rows to export.", true); return; } const cols = currentColumns; const csv = [cols.join(",")].concat(rows.map(function(r){ return cols.map(function(c){ return csvEscape(r[c]); }).join(","); })).join(String.fromCharCode(10)); downloadText("va-ratings.csv", csv); }
     function exportSummary() { const lines = []; lines.push("VA Ratings Summary"); lines.push("Generated locally in browser"); lines.push(""); if (lastCalcResult && lastCalcResult.actualCombined !== null) { lines.push("Actual combined rating: " + lastCalcResult.actualCombined.toFixed(1) + "%"); lines.push("Final rounded rating: " + lastCalcResult.roundedCombined + "%"); lines.push("Bilateral factor added: " + lastCalcResult.bilateralAdded.toFixed(1) + "%"); lines.push(""); lines.push("Calculation steps:"); lines.push(lastCalcResult.steps.join(String.fromCharCode(10))); } else { lines.push("No calculator results available."); } downloadText("va-rating-summary.txt", lines.join(String.fromCharCode(10))); }
-    function downloadText(filename, text) { const blob = new Blob([text], { type:"text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); }
+    function downloadText(filename, text, type) { const blob = new Blob([text], { type:type || "text/plain" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = filename; a.click(); URL.revokeObjectURL(url); }
     function csvEscape(value) { if (value === null || value === undefined) return ""; const s = typeof value === "object" ? JSON.stringify(value) : String(value); return '"' + s.replaceAll('"', '""') + '"'; }
 
     function formatCell(column, value) { if (column === "decision") { const className = value === "Service Connected" ? "service-connected" : value === "Not Service Connected" ? "not-service-connected" : "unknown"; return "<span class='pill " + className + "'>" + escapeHtml(formatValue(value)) + "</span>"; } if (column === "rating_percentage") return "<span class='rating'>" + escapeHtml(formatRating(value)) + "</span>"; if (typeof value === "boolean") return value ? "Yes" : "No"; if (typeof value === "object" && value !== null) return "<pre>" + escapeHtml(JSON.stringify(value, null, 2)) + "</pre>"; return escapeHtml(formatValue(value)); }
@@ -408,37 +472,5 @@
     renderTable();
     calculateVaMath();
   </script>
-  <section class="card">
-  <h2>Helpful VA Links</h2>
-  <p class="note">Quick access to common VA tools and actions.</p>
-
-  <ul style="line-height: 1.8;">
-    <li>
-      <a href="https://www.va.gov/resources/your-intent-to-file-a-va-claim/" target="_blank">
-        Intent to File
-      </a>
-    </li>
-    <li>
-      <a href="https://www.va.gov/disability/file-disability-claim-form-21-526ez/start" target="_blank">
-        File a Claim
-      </a>
-    </li>
-    <li>
-      <a href="https://www.va.gov/claim-or-appeal-status/" target="_blank">
-        Claim Status
-      </a>
-    </li>
-    <li>
-      <a href="https://www.va.gov/track-claims/your-claim-letters/" target="_blank">
-        Claim Letters
-      </a>
-    </li>
-    <li>
-      <a href="https://www.va.gov/records/request-personal-records-form-20-10206/introduction" target="_blank">
-        Request Records (FOIA / Privacy Act)
-      </a>
-    </li>
-  </ul>
-</section>
 </body>
 </html>
